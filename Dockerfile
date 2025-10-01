@@ -20,5 +20,5 @@ COPY . .
 ENV PORT=3000
 EXPOSE 3000
 
-# Use gunicorn in production
-CMD ["gunicorn", "-w", "2", "-k", "gthread", "-b", "0.0.0.0:3000", "app:app"]
+# Use uvicorn in production for FastAPI
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "3000"]

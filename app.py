@@ -1,66 +1,84 @@
-# app.py
-from flask import Flask, request, jsonify
+from fastapi import FastAPI, Request, BackgroundTasks
+from fastapi.responses import JSONResponse
 from datetime import datetime
-from models import get_transaction, create_transaction
-from worker import start_worker
+import asyncio
 
-app = Flask(__name__)
+from models import transactions
 
-# Start background worker
-start_worker(app)
 
-@app.route("/")
-def health():
-    return jsonify({
+app = FastAPI()
+
+
+async def process_transaction(transaction_id: str) -> None:
+    """Simulate external processing with 30 sec delay and update MongoDB."""
+    await asyncio.sleep(30)
+    transactions.update_one(
+        {"transaction_id": transaction_id},
+        {
+            "$set": {
+                "status": "PROCESSED",
+                "processed_at": datetime.utcnow().isoformat() + "Z",
+            }
+        },
+    )
+
+
+@app.get("/")
+async def health_check():
+    return {
         "status": "HEALTHY",
-        "current_time": datetime.utcnow().isoformat() + "Z"
-    })
+        "current_time": datetime.utcnow().isoformat() + "Z",
+    }
+
 
 @app.post("/v1/webhooks/transactions")
-def webhook():
-    data = request.get_json(force=True)
+async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
+    body = await request.json()
 
-    # Validate
-    required = ["transaction_id", "source_account", "destination_account", "amount", "currency"]
-    if not all(k in data for k in required):
-        return jsonify({"error": "Missing fields"}), 400
+    required = [
+        "transaction_id",
+        "source_account",
+        "destination_account",
+        "amount",
+        "currency",
+    ]
+    if not all(k in body for k in required):
+        return JSONResponse(status_code=400, content={"error": "Missing fields"})
 
-    tx = get_transaction(data["transaction_id"])
-    if tx:
-        # Already exists (idempotency)
-        return jsonify({"message": "Webhook received (duplicate ignored)"}), 202
+    transaction_id = body["transaction_id"]
+    existing_txn = transactions.find_one({"transaction_id": transaction_id})
 
-    # Create new transaction
-    create_transaction({
-        "transaction_id": data["transaction_id"],
-        "source_account": data["source_account"],
-        "destination_account": data["destination_account"],
-        "amount": data["amount"],
-        "currency": data["currency"],
-        "status": "PROCESSING",
-        "created_at": datetime.utcnow(),
-        "processed_at": None,
-        "locked_at": None,
-    })
+    if not existing_txn:
+        doc = {
+            "transaction_id": body["transaction_id"],
+            "source_account": body["source_account"],
+            "destination_account": body["destination_account"],
+            "amount": body["amount"],
+            "currency": body["currency"],
+            "status": "PROCESSING",
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "processed_at": None,
+        }
+        transactions.insert_one(doc)
+        background_tasks.add_task(process_transaction, transaction_id)
 
-    return jsonify({"message": "Webhook received"}), 202
+    return JSONResponse(status_code=202, content={"message": "Accepted"})
 
-@app.get("/v1/transactions/<transaction_id>")
-def get_transaction_route(transaction_id):
-    tx = get_transaction(transaction_id)
-    if not tx:
-        return jsonify({"error": "Not found"}), 404
 
-    return jsonify({
-        "transaction_id": tx["transaction_id"],
-        "source_account": tx["source_account"],
-        "destination_account": tx["destination_account"],
-        "amount": tx["amount"],
-        "currency": tx["currency"],
-        "status": tx["status"],
-        "created_at": tx["created_at"].isoformat() + "Z" if tx.get("created_at") else None,
-        "processed_at": tx["processed_at"].isoformat() + "Z" if tx.get("processed_at") else None
-    })
-
-if __name__ == "__main__":
-    app.run(port=3000, debug=True)
+@app.get("/v1/transactions/{transaction_id}")
+async def get_transaction(transaction_id: str):
+    projection = {"_id": 0}
+    txn = transactions.find_one({"transaction_id": transaction_id}, projection)
+    if not txn:
+        return JSONResponse(status_code=404, content={"error": "Transaction not found"})
+    allowed_keys = [
+        "transaction_id",
+        "source_account",
+        "destination_account",
+        "amount",
+        "currency",
+        "status",
+        "created_at",
+        "processed_at",
+    ]
+    return {k: txn.get(k) for k in allowed_keys}

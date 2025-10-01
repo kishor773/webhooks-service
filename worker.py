@@ -1,10 +1,8 @@
 # worker.py
 import threading, time
-from datetime import datetime
 from models import find_and_claim_one, mark_processed
 
 POLL_INTERVAL = 2   # seconds
-LOCK_TIMEOUT = 60   # seconds (recover jobs if stuck)
 
 def process_transaction(tx):
     """Simulate external API processing with 30s delay"""
@@ -14,9 +12,9 @@ def process_transaction(tx):
     print(f"[worker] Finished {tx['transaction_id']}")
 
 def worker_loop(app):
-    # No Flask app context needed for Mongo operations
+    # No framework app context needed for Mongo operations
     while True:
-        tx = find_and_claim_one(LOCK_TIMEOUT)
+        tx = find_and_claim_one()
         if tx:
             threading.Thread(target=process_transaction, args=(tx,)).start()
         time.sleep(POLL_INTERVAL)

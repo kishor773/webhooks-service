@@ -1,6 +1,6 @@
 # models.py
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional, Dict, Any
 
 from pymongo import MongoClient, ReturnDocument
@@ -33,23 +33,11 @@ def create_transaction(doc: Dict[str, Any]) -> None:
         pass
 
 
-def find_and_claim_one(lock_timeout_seconds: int) -> Optional[Dict[str, Any]]:
-    now = datetime.utcnow()
-    stale_before = now - timedelta(seconds=lock_timeout_seconds)
-
-    query = {
-        "$or": [
-            {"status": "PROCESSING"},
-            {"status": "IN_PROGRESS", "locked_at": {"$lt": stale_before}},
-        ]
-    }
-
-    update = {"$set": {"status": "IN_PROGRESS", "locked_at": now}}
-
-    # Atomically find one eligible doc and claim it
+def find_and_claim_one() -> Optional[Dict[str, Any]]:
+    # Atomically claim the next PROCESSING document and move it to IN_PROGRESS
     claimed = transactions.find_one_and_update(
-        query,
-        update,
+        {"status": "PROCESSING"},
+        {"$set": {"status": "IN_PROGRESS"}},
         return_document=ReturnDocument.AFTER,
     )
     return claimed
@@ -58,5 +46,5 @@ def find_and_claim_one(lock_timeout_seconds: int) -> Optional[Dict[str, Any]]:
 def mark_processed(transaction_id: str) -> None:
     transactions.update_one(
         {"transaction_id": transaction_id},
-        {"$set": {"status": "PROCESSED", "processed_at": datetime.utcnow(), "locked_at": None}},
+        {"$set": {"status": "PROCESSED", "processed_at": datetime.utcnow()}},
     )
